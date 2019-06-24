@@ -145,6 +145,7 @@ type Config struct {
 	PrometheusDefaultBaseImage    string
 	ThanosDefaultBaseImage        string
 	Namespaces                    []string
+	PromInstanceNamespaces        []string //  limits where Prometheus CRDs,their secrets and configmaps are watched for
 	Labels                        Labels
 	CrdGroup                      string
 	CrdKinds                      monitoringv1.CrdKinds
@@ -215,8 +216,17 @@ func New(conf Config, logger log.Logger) (*Operator, error) {
 		configGenerator:        NewConfigGenerator(logger),
 	}
 
+	promNS := c.config.PromInstanceNamespaces
+	if len(promNS) == 0 {
+		promNS = c.config.Namespaces
+	}
+
+	level.Debug(c.logger).Log("msg", "selected prometheus namespaces", strings.Join(promNS, ","))
+	level.Debug(c.logger).Log("msg", "selected namespaces for servicemonitors/prometheusrules", strings.Join(c.config.Namespaces, ","))
+
 	c.promInf = cache.NewSharedIndexInformer(
-		listwatch.MultiNamespaceListerWatcher(c.config.Namespaces, func(namespace string) cache.ListerWatcher {
+		listwatch.MultiNamespaceListerWatcher(promNS, func(namespace string) cache.ListerWatcher {
+			level.Debug(c.logger).Log("msg", fmt.Sprintf("Prometheus CRD sync from namespaces: %s", promNS))
 			return &cache.ListWatch{
 				ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
 					options.LabelSelector = c.config.PromSelector
@@ -268,7 +278,8 @@ func New(conf Config, logger log.Logger) (*Operator, error) {
 	)
 
 	c.cmapInf = cache.NewSharedIndexInformer(
-		listwatch.MultiNamespaceListerWatcher(c.config.Namespaces, func(namespace string) cache.ListerWatcher {
+		listwatch.MultiNamespaceListerWatcher(promNS, func(namespace string) cache.ListerWatcher {
+			level.Debug(c.logger).Log("msg", fmt.Sprintf("Prometheus configmaps sync from namespaces: %s", promNS))
 			return &cache.ListWatch{
 				ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
 					options.LabelSelector = labelPrometheusName
@@ -284,14 +295,16 @@ func New(conf Config, logger log.Logger) (*Operator, error) {
 	)
 
 	c.secrInf = cache.NewSharedIndexInformer(
-		listwatch.MultiNamespaceListerWatcher(c.config.Namespaces, func(namespace string) cache.ListerWatcher {
+		listwatch.MultiNamespaceListerWatcher(promNS, func(namespace string) cache.ListerWatcher {
+			level.Debug(c.logger).Log("msg", fmt.Sprintf("Prometheus secrets sync from namespaces: %s", promNS))
 			return cache.NewListWatchFromClient(c.kclient.CoreV1().RESTClient(), "secrets", namespace, fields.Everything())
 		}),
 		&v1.Secret{}, resyncPeriod, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc},
 	)
 
 	c.ssetInf = cache.NewSharedIndexInformer(
-		listwatch.MultiNamespaceListerWatcher(c.config.Namespaces, func(namespace string) cache.ListerWatcher {
+		listwatch.MultiNamespaceListerWatcher(promNS, func(namespace string) cache.ListerWatcher {
+			level.Debug(c.logger).Log("msg", fmt.Sprintf("Prometheus statefulsets sync from namespaces: %s", promNS))
 			return cache.NewListWatchFromClient(c.kclient.AppsV1().RESTClient(), "statefulsets", namespace, fields.Everything())
 		}),
 		&appsv1.StatefulSet{}, resyncPeriod, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc},
@@ -812,6 +825,7 @@ func (c *Operator) handleConfigMapDelete(obj interface{}) {
 }
 
 func (c *Operator) handleConfigMapUpdate(old, cur interface{}) {
+	time.Sleep(time.Minute)
 	if old.(*v1.ConfigMap).ResourceVersion == cur.(*v1.ConfigMap).ResourceVersion {
 		return
 	}
@@ -1029,6 +1043,7 @@ func (c *Operator) handleStatefulSetUpdate(oldo, curo interface{}) {
 }
 
 func (c *Operator) sync(key string) error {
+	time.Sleep(time.Minute)
 	obj, exists, err := c.promInf.GetIndexer().GetByKey(key)
 	if err != nil {
 		return err

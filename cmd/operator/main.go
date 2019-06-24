@@ -59,7 +59,8 @@ const (
 )
 
 var (
-	ns = namespaces{}
+	ns     = namespaces{}
+	promNS = namespaces{}
 )
 
 type namespaces map[string]struct{}
@@ -140,6 +141,7 @@ func init() {
 	flagset.StringVar(&cfg.PrometheusDefaultBaseImage, "prometheus-default-base-image", "quay.io/prometheus/prometheus", "Prometheus default base image")
 	flagset.StringVar(&cfg.ThanosDefaultBaseImage, "thanos-default-base-image", "improbable/thanos", "Thanos default base image")
 	flagset.Var(ns, "namespaces", "Namespaces to scope the interaction of the Prometheus Operator and the apiserver.")
+	flagset.Var(promNS, "prometheus-instance-namespaces", "Namespaces where Prometheus CRDs and corresponding Secrets,Configmaps and StatefulSets are watched/created.")
 	flagset.Var(&cfg.Labels, "labels", "Labels to be add to all resources created by the operator")
 	flagset.StringVar(&cfg.CrdGroup, "crd-apigroup", monitoring.GroupName, "prometheus CRD  API group name")
 	flagset.Var(&cfg.CrdKinds, "crd-kinds", " - EXPERIMENTAL (could be removed in future releases) - customize CRD kind names")
@@ -151,6 +153,7 @@ func init() {
 	flagset.StringVar(&cfg.PromSelector, "prometheus-instance-selector", "", "Label selector to filter Prometheus CRDs to manage")
 	flagset.Parse(os.Args[1:])
 	cfg.Namespaces = ns.asSlice()
+	cfg.PromInstanceNamespaces = promNS.asSlice()
 }
 
 func Main() int {

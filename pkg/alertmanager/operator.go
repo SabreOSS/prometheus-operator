@@ -119,7 +119,7 @@ func New(c prometheusoperator.Config, logger log.Logger) (*Operator, error) {
 			ConfigReloaderCPU:            c.ConfigReloaderCPU,
 			ConfigReloaderMemory:         c.ConfigReloaderMemory,
 			AlertmanagerDefaultBaseImage: c.AlertmanagerDefaultBaseImage,
-			Namespaces:                   c.Namespaces,
+			Namespaces:                   c.PromInstanceNamespaces,
 			CrdGroup:                     c.CrdGroup,
 			CrdKinds:                     c.CrdKinds,
 			Labels:                       c.Labels,
@@ -130,6 +130,7 @@ func New(c prometheusoperator.Config, logger log.Logger) (*Operator, error) {
 
 	o.alrtInf = cache.NewSharedIndexInformer(
 		listwatch.MultiNamespaceListerWatcher(o.config.Namespaces, func(namespace string) cache.ListerWatcher {
+			level.Debug(o.logger).Log("msg", fmt.Sprintf("Alertmanager crd sync from namespaces: %s", o.config.Namespaces))
 			return &cache.ListWatch{
 				ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
 					return o.mclient.MonitoringV1().Alertmanagers(namespace).List(options)
@@ -141,6 +142,7 @@ func New(c prometheusoperator.Config, logger log.Logger) (*Operator, error) {
 	)
 	o.ssetInf = cache.NewSharedIndexInformer(
 		listwatch.MultiNamespaceListerWatcher(o.config.Namespaces, func(namespace string) cache.ListerWatcher {
+			level.Debug(o.logger).Log("msg", fmt.Sprintf("Alertmanager statefulset sync from namespaces: %s", o.config.Namespaces))
 			return cache.NewListWatchFromClient(o.kclient.AppsV1().RESTClient(), "statefulsets", namespace, fields.Everything())
 		}),
 		&appsv1.StatefulSet{}, resyncPeriod, cache.Indexers{},
@@ -232,7 +234,7 @@ func (c *Operator) Run(stopc <-chan struct{}) error {
 	}
 
 	go c.worker()
-
+	time.Sleep(time.Minute)
 	go c.alrtInf.Run(stopc)
 	go c.ssetInf.Run(stopc)
 	if err := c.waitForCacheSync(stopc); err != nil {

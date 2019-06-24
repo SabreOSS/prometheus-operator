@@ -736,7 +736,11 @@ func makeStatefulSetSpec(p monitoringv1.Prometheus, c *Config, ruleConfigMapName
 		}
 
 		additionalContainers = append(additionalContainers, container)
-		promArgs = append(promArgs, "--storage.tsdb.min-block-duration=2h", "--storage.tsdb.max-block-duration=2h")
+		promArgs = append(promArgs,
+			"--storage.tsdb.min-block-duration=2h",
+			"--storage.tsdb.max-block-duration=2h",
+			"--storage.tsdb.wal-segment-size=10MB",
+			"--alertmanager.timeout=30s")
 	}
 
 	// Version is used by default.

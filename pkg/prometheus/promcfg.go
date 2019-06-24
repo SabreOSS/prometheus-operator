@@ -118,7 +118,7 @@ func buildExternalLabels(p *v1.Prometheus) yaml.MapSlice {
 	}
 
 	if prometheusExternalLabelName != "" {
-		m[prometheusExternalLabelName] = fmt.Sprintf("%s/%s", p.Namespace, p.Name)
+		m[prometheusExternalLabelName] = fmt.Sprintf("%s-%s", p.Namespace, p.Name)
 	}
 
 	if replicaExternalLabelName != "" {
@@ -508,6 +508,8 @@ func (cg *configGenerator) generatePodMonitorConfig(version semver.Version, m *v
 
 	if m.Spec.SampleLimit > 0 {
 		cfg = append(cfg, yaml.MapItem{Key: "sample_limit", Value: m.Spec.SampleLimit})
+	} else {
+		cfg = append(cfg, yaml.MapItem{Key: "sample_limit", Value: 50000})
 	}
 
 	if ep.MetricRelabelConfigs != nil {
@@ -714,6 +716,24 @@ func (cg *configGenerator) generateServiceMonitorConfig(version semver.Version, 
 		{
 			{Key: "source_labels", Value: []string{"__meta_kubernetes_pod_name"}},
 			{Key: "target_label", Value: "pod"},
+		},
+		{ // get all labels from service
+			{Key: "separator", Value: ";"},
+			{Key: "regex", Value: "__meta_kubernetes_service_label_(.+)"},
+			{Key: "replacement", Value: "$1"},
+			{Key: "action", Value: "labelmap"},
+		},
+		{ // get all labels from node
+			{Key: "separator", Value: ";"},
+			{Key: "regex", Value: "__meta_kubernetes_node_label_(.+)"},
+			{Key: "replacement", Value: "$1"},
+			{Key: "action", Value: "labelmap"},
+		},
+		{ // get all labels from pod
+			{Key: "separator", Value: ";"},
+			{Key: "regex", Value: "__meta_kubernetes_pod_label_(.+)"},
+			{Key: "replacement", Value: "$1"},
+			{Key: "action", Value: "labelmap"},
 		},
 	}...)
 
