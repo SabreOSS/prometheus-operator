@@ -134,7 +134,6 @@ func buildExternalLabels(p *v1.Prometheus) yaml.MapSlice {
 func (cg *configGenerator) generateConfig(
 	p *v1.Prometheus,
 	sMons map[string]*v1.ServiceMonitor,
-	pMons map[string]*v1.PodMonitor,
 	basicAuthSecrets map[string]BasicAuthCredentials,
 	additionalScrapeConfigs []byte,
 	additionalAlertRelabelConfigs []byte,
@@ -191,27 +190,12 @@ func (cg *configGenerator) generateConfig(
 	// Sorting ensures, that we always generate the config in the same order.
 	sort.Strings(sMonIdentifiers)
 
-	pMonIdentifiers := make([]string, len(pMons))
-	i = 0
-	for k := range pMons {
-		pMonIdentifiers[i] = k
-		i++
-	}
-
-	// Sorting ensures, that we always generate the config in the same order.
-	sort.Strings(pMonIdentifiers)
-
 	apiserverConfig := p.Spec.APIServerConfig
 
 	var scrapeConfigs []yaml.MapSlice
 	for _, identifier := range sMonIdentifiers {
 		for i, ep := range sMons[identifier].Spec.Endpoints {
 			scrapeConfigs = append(scrapeConfigs, cg.generateServiceMonitorConfig(version, sMons[identifier], ep, i, apiserverConfig, basicAuthSecrets))
-		}
-	}
-	for _, identifier := range pMonIdentifiers {
-		for i, ep := range pMons[identifier].Spec.PodMetricsEndpoints {
-			scrapeConfigs = append(scrapeConfigs, cg.generatePodMonitorConfig(version, pMons[identifier], ep, i, apiserverConfig, basicAuthSecrets))
 		}
 	}
 
