@@ -33,6 +33,7 @@ import (
 	"github.com/openshift/prom-label-proxy/injectproxy"
 	"github.com/pkg/errors"
 	"github.com/prometheus/prometheus/pkg/labels"
+	"github.com/prometheus/prometheus/pkg/rulefmt"
 	"github.com/prometheus/prometheus/promql"
 )
 
@@ -179,10 +180,15 @@ func (c *Operator) selectRules(p *monitoringv1.Prometheus, namespaces []string) 
 			promRule := obj.(*monitoringv1.PrometheusRule)
 			content, err := generateContent(promRule.Spec, p.Spec.EnforcedNamespaceLabel, promRule.Namespace)
 			if err != nil {
-				marshalErr = err
-				return
+				_ = level.Info(c.logger).Log(
+					"msg", "rule skipped, validation failed",
+					"rule", promRule.ObjectMeta.Name,
+					"namespace", promRule.ObjectMeta.Namespace,
+					"err", err,
+				)
+			} else {
+				rules[fmt.Sprintf("%v-%v.yaml", promRule.Namespace, promRule.Name)] = content
 			}
-			rules[fmt.Sprintf("%v-%v.yaml", promRule.Namespace, promRule.Name)] = content
 		})
 		if err != nil {
 			return nil, err
@@ -237,6 +243,10 @@ func generateContent(promRule monitoringv1.PrometheusRuleSpec, enforcedNsLabel, 
 	content, err := yaml.Marshal(promRule)
 	if err != nil {
 		return "", errors.Wrap(err, "failed to unmarshal content")
+	}
+	_, parseErr := rulefmt.Parse(content)
+	if parseErr != nil {
+		return "", errors.Wrap(parseErr[0], "failed to parse content")
 	}
 	return string(content), nil
 }

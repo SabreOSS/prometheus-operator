@@ -239,6 +239,7 @@ func (c *Operator) Run(stopc <-chan struct{}) error {
 
 	go c.worker()
 
+	time.Sleep(time.Minute)
 	go c.alrtInf.Run(stopc)
 	go c.ssetInf.Run(stopc)
 	if err := c.waitForCacheSync(stopc); err != nil {

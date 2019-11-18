@@ -135,7 +135,7 @@ func buildExternalLabels(p *v1.Prometheus) yaml.MapSlice {
 	}
 
 	if prometheusExternalLabelName != "" {
-		m[prometheusExternalLabelName] = fmt.Sprintf("%s/%s", p.Namespace, p.Name)
+		m[prometheusExternalLabelName] = fmt.Sprintf("%s-%s", p.Namespace, p.Name)
 	}
 
 	if replicaExternalLabelName != "" {
@@ -151,7 +151,6 @@ func buildExternalLabels(p *v1.Prometheus) yaml.MapSlice {
 func (cg *configGenerator) generateConfig(
 	p *v1.Prometheus,
 	sMons map[string]*v1.ServiceMonitor,
-	pMons map[string]*v1.PodMonitor,
 	basicAuthSecrets map[string]BasicAuthCredentials,
 	bearerTokens map[string]BearerToken,
 	additionalScrapeConfigs []byte,
@@ -209,16 +208,6 @@ func (cg *configGenerator) generateConfig(
 	// Sorting ensures, that we always generate the config in the same order.
 	sort.Strings(sMonIdentifiers)
 
-	pMonIdentifiers := make([]string, len(pMons))
-	i = 0
-	for k := range pMons {
-		pMonIdentifiers[i] = k
-		i++
-	}
-
-	// Sorting ensures, that we always generate the config in the same order.
-	sort.Strings(pMonIdentifiers)
-
 	apiserverConfig := p.Spec.APIServerConfig
 
 	var scrapeConfigs []yaml.MapSlice
@@ -232,20 +221,6 @@ func (cg *configGenerator) generateConfig(
 					apiserverConfig,
 					basicAuthSecrets,
 					bearerTokens,
-					p.Spec.OverrideHonorLabels,
-					p.Spec.OverrideHonorTimestamps,
-					p.Spec.IgnoreNamespaceSelectors,
-					p.Spec.EnforcedNamespaceLabel))
-		}
-	}
-	for _, identifier := range pMonIdentifiers {
-		for i, ep := range pMons[identifier].Spec.PodMetricsEndpoints {
-			scrapeConfigs = append(scrapeConfigs,
-				cg.generatePodMonitorConfig(
-					version,
-					pMons[identifier], ep, i,
-					apiserverConfig,
-					basicAuthSecrets,
 					p.Spec.OverrideHonorLabels,
 					p.Spec.OverrideHonorTimestamps,
 					p.Spec.IgnoreNamespaceSelectors,
@@ -358,224 +333,6 @@ func honorTimestamps(cfg yaml.MapSlice, userHonorTimestamps *bool, overrideHonor
 	}
 
 	return append(cfg, yaml.MapItem{Key: "honor_timestamps", Value: honor && !overrideHonorTimestamps})
-}
-
-func (cg *configGenerator) generatePodMonitorConfig(
-	version semver.Version,
-	m *v1.PodMonitor,
-	ep v1.PodMetricsEndpoint,
-	i int, apiserverConfig *v1.APIServerConfig,
-	basicAuthSecrets map[string]BasicAuthCredentials,
-	ignoreHonorLabels bool,
-	overrideHonorTimestamps bool,
-	ignoreNamespaceSelectors bool,
-	enforcedNamespaceLabel string) yaml.MapSlice {
-
-	hl := honorLabels(ep.HonorLabels, ignoreHonorLabels)
-	cfg := yaml.MapSlice{
-		{
-			Key:   "job_name",
-			Value: fmt.Sprintf("%s/%s/%d", m.Namespace, m.Name, i),
-		},
-		{
-			Key:   "honor_labels",
-			Value: hl,
-		},
-	}
-	if version.Major == 2 && version.Minor >= 9 {
-		cfg = honorTimestamps(cfg, ep.HonorTimestamps, overrideHonorTimestamps)
-	}
-
-	if version.Major == 1 && version.Minor < 7 {
-		if apiserverConfig != nil {
-			level.Info(cg.logger).Log("msg", "custom apiserver config is set but it will not take effect because prometheus version is < 1.7")
-		}
-		cfg = append(cfg, cg.generateK8SSDConfig(nil, nil, nil, kubernetesSDRolePod))
-	} else {
-		selectedNamespaces := getNamespacesFromNamespaceSelector(&m.Spec.NamespaceSelector, m.Namespace, ignoreNamespaceSelectors)
-		cfg = append(cfg, cg.generateK8SSDConfig(selectedNamespaces, apiserverConfig, basicAuthSecrets, kubernetesSDRolePod))
-	}
-
-	if ep.Interval != "" {
-		cfg = append(cfg, yaml.MapItem{Key: "scrape_interval", Value: ep.Interval})
-	}
-	if ep.ScrapeTimeout != "" {
-		cfg = append(cfg, yaml.MapItem{Key: "scrape_timeout", Value: ep.ScrapeTimeout})
-	}
-	if ep.Path != "" {
-		cfg = append(cfg, yaml.MapItem{Key: "metrics_path", Value: ep.Path})
-	}
-	if ep.ProxyURL != nil {
-		cfg = append(cfg, yaml.MapItem{Key: "proxy_url", Value: ep.ProxyURL})
-	}
-	if ep.Params != nil {
-		cfg = append(cfg, yaml.MapItem{Key: "params", Value: ep.Params})
-	}
-	if ep.Scheme != "" {
-		cfg = append(cfg, yaml.MapItem{Key: "scheme", Value: ep.Scheme})
-	}
-
-	var (
-		relabelings []yaml.MapSlice
-		labelKeys   []string
-	)
-	// Filter targets by pods selected by the monitor.
-	// Exact label matches.
-	for k := range m.Spec.Selector.MatchLabels {
-		labelKeys = append(labelKeys, k)
-	}
-	sort.Strings(labelKeys)
-
-	for _, k := range labelKeys {
-		relabelings = append(relabelings, yaml.MapSlice{
-			{Key: "action", Value: "keep"},
-			{Key: "source_labels", Value: []string{"__meta_kubernetes_pod_label_" + sanitizeLabelName(k)}},
-			{Key: "regex", Value: m.Spec.Selector.MatchLabels[k]},
-		})
-	}
-	// Set based label matching. We have to map the valid relations
-	// `In`, `NotIn`, `Exists`, and `DoesNotExist`, into relabeling rules.
-	for _, exp := range m.Spec.Selector.MatchExpressions {
-		switch exp.Operator {
-		case metav1.LabelSelectorOpIn:
-			relabelings = append(relabelings, yaml.MapSlice{
-				{Key: "action", Value: "keep"},
-				{Key: "source_labels", Value: []string{"__meta_kubernetes_pod_label_" + sanitizeLabelName(exp.Key)}},
-				{Key: "regex", Value: strings.Join(exp.Values, "|")},
-			})
-		case metav1.LabelSelectorOpNotIn:
-			relabelings = append(relabelings, yaml.MapSlice{
-				{Key: "action", Value: "drop"},
-				{Key: "source_labels", Value: []string{"__meta_kubernetes_pod_label_" + sanitizeLabelName(exp.Key)}},
-				{Key: "regex", Value: strings.Join(exp.Values, "|")},
-			})
-		case metav1.LabelSelectorOpExists:
-			relabelings = append(relabelings, yaml.MapSlice{
-				{Key: "action", Value: "keep"},
-				{Key: "source_labels", Value: []string{"__meta_kubernetes_pod_label_" + sanitizeLabelName(exp.Key)}},
-				{Key: "regex", Value: ".+"},
-			})
-		case metav1.LabelSelectorOpDoesNotExist:
-			relabelings = append(relabelings, yaml.MapSlice{
-				{Key: "action", Value: "drop"},
-				{Key: "source_labels", Value: []string{"__meta_kubernetes_pod_label_" + sanitizeLabelName(exp.Key)}},
-				{Key: "regex", Value: ".+"},
-			})
-		}
-	}
-
-	if version.Major == 1 && version.Minor < 7 {
-		relabelings = appendPre17RelabelConfig(relabelings, m.Namespace, m.Spec.NamespaceSelector, ignoreNamespaceSelectors)
-	}
-
-	// Filter targets based on correct port for the endpoint.
-	if ep.Port != "" {
-		relabelings = append(relabelings, yaml.MapSlice{
-			{Key: "action", Value: "keep"},
-			{Key: "source_labels", Value: []string{"__meta_kubernetes_pod_container_port_name"}},
-			{Key: "regex", Value: ep.Port},
-		})
-	} else if ep.TargetPort != nil {
-		if ep.TargetPort.StrVal != "" {
-			relabelings = append(relabelings, yaml.MapSlice{
-				{Key: "action", Value: "keep"},
-				{Key: "source_labels", Value: []string{"__meta_kubernetes_pod_container_port_name"}},
-				{Key: "regex", Value: ep.TargetPort.String()},
-			})
-		} else if ep.TargetPort.IntVal != 0 {
-			relabelings = append(relabelings, yaml.MapSlice{
-				{Key: "action", Value: "keep"},
-				{Key: "source_labels", Value: []string{"__meta_kubernetes_pod_container_port_number"}},
-				{Key: "regex", Value: ep.TargetPort.String()},
-			})
-		}
-	}
-
-	// Relabel namespace and pod and service labels into proper labels.
-	relabelings = append(relabelings, []yaml.MapSlice{
-		{
-			{Key: "source_labels", Value: []string{"__meta_kubernetes_namespace"}},
-			{Key: "target_label", Value: "namespace"},
-		},
-		{
-			{Key: "source_labels", Value: []string{"__meta_kubernetes_pod_container_name"}},
-			{Key: "target_label", Value: "container"},
-		},
-		{
-			{Key: "source_labels", Value: []string{"__meta_kubernetes_pod_name"}},
-			{Key: "target_label", Value: "pod"},
-		},
-	}...)
-
-	// Relabel targetLabels from Pod onto target.
-	for _, l := range m.Spec.PodTargetLabels {
-		relabelings = append(relabelings, yaml.MapSlice{
-			{Key: "source_labels", Value: []string{"__meta_kubernetes_pod_label_" + sanitizeLabelName(l)}},
-			{Key: "target_label", Value: sanitizeLabelName(l)},
-			{Key: "regex", Value: "(.+)"},
-			{Key: "replacement", Value: "${1}"},
-		})
-	}
-
-	// By default, generate a safe job name from the PodMonitor. We also keep
-	// this around if a jobLabel is set in case the targets don't actually have a
-	// value for it. A single pod may potentially have multiple metrics
-	// endpoints, therefore the endpoints labels is filled with the ports name or
-	// as a fallback the port number.
-
-	relabelings = append(relabelings, yaml.MapSlice{
-		{Key: "target_label", Value: "job"},
-		{Key: "replacement", Value: fmt.Sprintf("%s/%s", m.GetNamespace(), m.GetName())},
-	})
-	if m.Spec.JobLabel != "" {
-		relabelings = append(relabelings, yaml.MapSlice{
-			{Key: "source_labels", Value: []string{"__meta_kubernetes_pod_label_" + sanitizeLabelName(m.Spec.JobLabel)}},
-			{Key: "target_label", Value: "job"},
-			{Key: "regex", Value: "(.+)"},
-			{Key: "replacement", Value: "${1}"},
-		})
-	}
-
-	if ep.Port != "" {
-		relabelings = append(relabelings, yaml.MapSlice{
-			{Key: "target_label", Value: "endpoint"},
-			{Key: "replacement", Value: ep.Port},
-		})
-	} else if ep.TargetPort != nil && ep.TargetPort.String() != "" {
-		relabelings = append(relabelings, yaml.MapSlice{
-			{Key: "target_label", Value: "endpoint"},
-			{Key: "replacement", Value: ep.TargetPort.String()},
-		})
-	}
-
-	if ep.RelabelConfigs != nil {
-		for _, c := range ep.RelabelConfigs {
-			relabelings = append(relabelings, generateRelabelConfig(c))
-		}
-	}
-	// Because of security risks, whenever enforcedNamespaceLabel is set, we want to append it to the
-	// relabel_configs as the last relabeling, to ensure it overrides any other relabelings.
-	relabelings = enforceNamespaceLabel(relabelings, m.Namespace, enforcedNamespaceLabel)
-	cfg = append(cfg, yaml.MapItem{Key: "relabel_configs", Value: relabelings})
-
-	if m.Spec.SampleLimit > 0 {
-		cfg = append(cfg, yaml.MapItem{Key: "sample_limit", Value: m.Spec.SampleLimit})
-	}
-
-	if ep.MetricRelabelConfigs != nil {
-		var metricRelabelings []yaml.MapSlice
-		for _, c := range ep.MetricRelabelConfigs {
-			if c.TargetLabel != "" && enforcedNamespaceLabel != "" && c.TargetLabel == enforcedNamespaceLabel {
-				continue
-			}
-			relabeling := generateRelabelConfig(c)
-
-			metricRelabelings = append(metricRelabelings, relabeling)
-		}
-		cfg = append(cfg, yaml.MapItem{Key: "metric_relabel_configs", Value: metricRelabelings})
-	}
-
-	return cfg
 }
 
 func (cg *configGenerator) generateServiceMonitorConfig(
@@ -761,6 +518,24 @@ func (cg *configGenerator) generateServiceMonitorConfig(
 		{
 			{Key: "source_labels", Value: []string{"__meta_kubernetes_pod_name"}},
 			{Key: "target_label", Value: "pod"},
+		},
+		{ // get all labels from service
+			{Key: "separator", Value: ";"},
+			{Key: "regex", Value: "__meta_kubernetes_service_label_(.+)"},
+			{Key: "replacement", Value: "$1"},
+			{Key: "action", Value: "labelmap"},
+		},
+		{ // get all labels from node
+			{Key: "separator", Value: ";"},
+			{Key: "regex", Value: "__meta_kubernetes_node_label_(.+)"},
+			{Key: "replacement", Value: "$1"},
+			{Key: "action", Value: "labelmap"},
+		},
+		{ // get all labels from pod
+			{Key: "separator", Value: ";"},
+			{Key: "regex", Value: "__meta_kubernetes_pod_label_(.+)"},
+			{Key: "replacement", Value: "$1"},
+			{Key: "action", Value: "labelmap"},
 		},
 	}...)
 
